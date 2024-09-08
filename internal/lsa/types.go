@@ -303,3 +303,47 @@ const (
 )
 
 
+type DisplayTicket struct {
+	ServiceName 		string
+	ClientName  		string
+	DomainName  		string
+	TargetDomainName  	string
+	AltTargetDomainName string
+	SessionKey   		string
+	TicketFlags			string
+	Flags               string
+	KeyExpirationTime   string
+	StartTime           string
+	EndTime  			string
+	RenewUntil          string
+	TimeSkew            string
+	EncodedTicket       string
+
+}
+
+type DisplayTicketStub struct {
+	ServerName 			string
+	ClientName  		string
+	ClientRealm  		string
+	ServerRealm      	string
+	StartTime           string
+	EndTime  			string
+	RenewTime           string
+	TicketFlags         string
+	Ticket   			DisplayTicket
+}
+type DisplaySession struct {
+	UserName 			   string
+	LogonDomain  		   string
+	LogonId  		       string
+	Sid             	   string
+	AuthenticationPackage  string
+	LogonType    		   string
+	LogonTime              string
+	LogonServer            string
+	DnsDomainName          string
+	Upn                    string
+	CountOfTickets         int
+	TicketsStub   		   []DisplayTicketStub
+}
+

