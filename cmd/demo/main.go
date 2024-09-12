@@ -36,6 +36,18 @@ const (
 )
 
 func main() {
+		asciiArt := `
+     _   __          _                                _   
+    | | / /         | |                              | |  
+    | |/ /  ___ _ __| |__   ___  __ _  ___   __ _ ___| |_ 
+    |    \ / _ \ '__| '_ \ / _ \/ _` + "`" + ` |/ _ \ / _` + "`" + ` / __| __|
+    | |\  \  __/ |  | |_) |  __/ (_| | (_) | (_| \__ \ |_ 
+    \_| \_/\___|_|  |_.__/ \___|\__, |\___/ \__,_|___/\__|
+                                 __/ |                    
+                                |___/                     
+By Serizao @BZHunt   
+ `
+	fmt.Println(asciiArt)
 	OnlyKrbtgt := flag.Bool("krbtgt", false, "Display only krbtgt")
 	Monitor    := flag.Int("monitor", 0, "Monitor new ticket")
 	flag.Parse()
