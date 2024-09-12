@@ -25,3 +25,5 @@ Usage of kerbegoast.exe:
         Monitor new ticket
 
 ```
+# Thanks
+Part of this work was made possible thanks to the work of carpeltt (https://github.com/carlpett/winlsa)
