@@ -26,4 +26,4 @@ Usage of kerbegoast.exe:
 
 ```
 # Thanks
-Part of this work was made possible thanks to the work of carpeltt (https://github.com/carlpett/winlsa)
+Part of this work was made possible thanks to the work of carpeltt (https://github.com/carlpett/winlsa) and GhostPack with Rubeus (https://github.com/GhostPack/Rubeus)
